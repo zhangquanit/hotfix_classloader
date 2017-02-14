@@ -1,0 +1,123 @@
+一步步手动实现热修复
+https://code.csdn.net/u011064099/sahadevhotfix/tree/master
+
+1、dex文件的制作
+java->class->dex
+在android中使用DexClassLoader加载外部的dex
+DexClassLoader(String dexPath, String optimizedDirectory, String librarySearchPath, ClassLoader parent)
+DexClassLoader的构造方法需要4个参数，这里对这4个参数进行简要说明：
+String dexPath:dex文件的绝对路径。在这里我将其放入了应用的cache文件夹下。
+String optimizedDirectory:优化后的dex文件存放路径。DexClassLoader在构造完毕之后会对原有的dex文件优化并生成一个新的dex文件，在这里我选择的是.../cache/optimizedDirectory/目录。此外，API文档对该目录有严格的说明：Do not cache optimized classes on external storage.出于安全考虑，请不要将优化后的dex文件放入外部存储器中。
+String libraryPath:dex文件所需要的库文件路径。这里没有依赖，使用空字符串代替。
+ClassLoader parent:双亲委派模型中提到的父类加载器。这里我们使用默认的加载器，通过getClassLoader()方法获得。
+
+2、loadClass()
+protected Class<?> loadClass(String name, boolean resolve)
+	throws ClassNotFoundException
+{
+		// 首先查找该类是否已经被加载.
+		Class c = findLoadedClass(name);
+		if (c == null) {
+			long t0 = System.nanoTime();
+			try {
+				if (parent != null) { //如果该ClassLoader有父加载器，那么调用父加载器的loadClass()方法.
+					c = parent.loadClass(name, false);
+				} else { //如果没有父加载器，则调用findBootstrapClassOrNull()方法进行加载，该方法会使用引导类加载器进行加载。普通类是不会被该加载器加载到的，所以这里一般返回null.
+					c = findBootstrapClassOrNull(name);
+				}
+			} catch (ClassNotFoundException e) {
+				// ClassNotFoundException thrown if class not found
+				// from the non-null parent class loader
+			}
+
+			if (c == null) {
+				// 调用自身的findClass()方法进行查找。
+				long t1 = System.nanoTime();
+				c = findClass(name);
+
+				// this is the defining class loader; record the stats
+			}
+		}
+		return c;
+}
+
+protected Class<?> findClass(String name) throws ClassNotFoundException {
+    //ClassLoader的findClass()方法是个空方法，所以这个过程一般是由子加载器实现的
+	throw new ClassNotFoundException(name);
+}
+loadClass()方法大概做了以下工作：
+首先查找该类是否已经被加载.
+如果该ClassLoader有父加载器，那么调用父加载器的loadClass()方法.
+如果没有父加载器，则调用findBootstrapClassOrNull()方法进行加载，该方法会使用引导类加载器进行加载。普通类是不会被该加载器加载到的，所以这里一般返回null.
+如果前面的步骤都没找到，那调用自身的findClass()方法进行查找。
+
+
+
+public class BaseDexClassLoader extends ClassLoader
+public class DexClassLoader extends BaseDexClassLoader
+
+ClassLoader的findClass()方法是个空方法，所以这个过程一般是由子加载器实现的
+
+------------BaseDexClassLoader.java
+public class BaseDexClassLoader extends ClassLoader{
+  private final DexPathList pathList;
+  @Override
+    protected Class<?> findClass(String name) throws ClassNotFoundException {
+        Class clazz = pathList.findClass(name);
+
+        if (clazz == null) {
+            throw new ClassNotFoundException(name);
+        }
+
+        return clazz;
+    }
+}
+------------DexPathList.java
+public class DexPathList{
+public Class findClass(String name) {
+        for (Element element : dexElements) {
+            DexFile dex = element.dexFile;
+
+            if (dex != null) {
+                Class clazz = dex.loadClassBinaryName(name, definingContext);
+                if (clazz != null) {
+                    return clazz;
+                }
+            }
+        }
+
+        return null;
+    }
+ }
+}
+上述函数的大致逻辑为：遍历一个装在dex文件（每个dex文件实际上是一个DexFile对象）的数组（Element数组，Element是一个内部类），
+然后依次去加载所需要的class文件，直到找到为止。
+
+------------DexFile.java
+public class DexFile{
+
+    public Class loadClassBinaryName(String name, ClassLoader loader) {
+        return defineClass(name, loader, mCookie);
+    }
+
+    private native static Class defineClass(String name, ClassLoader loader, int cookie);
+
+}
+
+类的查找是通过遍历dexElements来进行查找的。所以为了实现替换效果，我们需要将DexClassLoader中的Element对象放到dexElements数组的第0个位置，
+这样才能在BaseDexClassLoader查找类时先找到DexClassLoader所用的user.dex中的类。
+
+3、Class文件的替换
+类的加载顺序
+类的加载是从上而下加载的，所以就算是DexClassLoader加载了外部的类，但是在系统使用类的时候还是会先在ClassLoader中查找，
+如果找不到则会在BaseDexClassLoader中查找，如果再找不到，就会进入PathClassLoader中查找，最后才会使用DexClassLoader进行查找，
+所以按照这个流程外部类是无法正常发挥作用的。所以我们的目的就是在查找工程内的类之前，先让加载器去外部的dex中查找。
+
+也就是说，将第二个dex放在dexElements数组中的第1位，这样就可以加载到外部的类。
+
+ClassLoader
+BaseDexClassLoader
+PathClassLoader ：Android应用就是用它来加载  PathClassLoader classLoader=(PathClassLoader)getClassLoader();
+DexClassLoader ：可以加载apk,jar,及dex文件，但PathClassLoader只能加载已安装到系统中（即/data/app目录下）的apk文件。
+
+
