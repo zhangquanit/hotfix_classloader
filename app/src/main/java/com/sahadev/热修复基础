@@ -1,6 +1,9 @@
 一步步手动实现热修复
 https://code.csdn.net/u011064099/sahadevhotfix/tree/master
 
+源码地址
+https://android.googlesource.com/platform/libcore/+/master/dalvik/src/main/java/dalvik/system
+
 1、dex文件的制作
 java->class->dex
 在android中使用DexClassLoader加载外部的dex
@@ -11,14 +14,13 @@ String optimizedDirectory:优化后的dex文件存放路径。DexClassLoader在�
 String libraryPath:dex文件所需要的库文件路径。这里没有依赖，使用空字符串代替。
 ClassLoader parent:双亲委派模型中提到的父类加载器。这里我们使用默认的加载器，通过getClassLoader()方法获得。
 
-2、loadClass()
+2、ClassLoader.loadClass()
 protected Class<?> loadClass(String name, boolean resolve)
 	throws ClassNotFoundException
 {
 		// 首先查找该类是否已经被加载.
 		Class c = findLoadedClass(name);
 		if (c == null) {
-			long t0 = System.nanoTime();
 			try {
 				if (parent != null) { //如果该ClassLoader有父加载器，那么调用父加载器的loadClass()方法.
 					c = parent.loadClass(name, false);
@@ -31,10 +33,8 @@ protected Class<?> loadClass(String name, boolean resolve)
 			}
 
 			if (c == null) {
-				// 调用自身的findClass()方法进行查找。
-				long t1 = System.nanoTime();
+				// 调用自身的findClass()方法进行查找。比如BaseDexClassLoader
 				c = findClass(name);
-
 				// this is the defining class loader; record the stats
 			}
 		}
@@ -42,9 +42,10 @@ protected Class<?> loadClass(String name, boolean resolve)
 }
 
 protected Class<?> findClass(String name) throws ClassNotFoundException {
-    //ClassLoader的findClass()方法是个空方法，所以这个过程一般是由子加载器实现的
+    //ClassLoader的findClass()方法是个空方法，所以这个过程一般是由子加载器实现的，比如BaseDexClassLoader
 	throw new ClassNotFoundException(name);
 }
+
 loadClass()方法大概做了以下工作：
 首先查找该类是否已经被加载.
 如果该ClassLoader有父加载器，那么调用父加载器的loadClass()方法.
@@ -53,58 +54,114 @@ loadClass()方法大概做了以下工作：
 
 
 
-public class BaseDexClassLoader extends ClassLoader
-public class DexClassLoader extends BaseDexClassLoader
+ClassLoader
+--BaseDexClassLoader
+   ---PathClassLoader ：Android应用就是用它来加载  PathClassLoader classLoader=(PathClassLoader)getClassLoader();
+      ---DexClassLoader ：可以加载apk,jar,及dex文件，但PathClassLoader只能加载已安装到系统中（即/data/app目录下）的apk文件。
 
-ClassLoader的findClass()方法是个空方法，所以这个过程一般是由子加载器实现的
 
-------------BaseDexClassLoader.java
+
+调用链
+ClassLoader.findClass() -> BaseDexClassLoader.findClass() -> pathList.findClass()->Element.findClass->DexFile.loadClassBinaryName()
+
 public class BaseDexClassLoader extends ClassLoader{
   private final DexPathList pathList;
+
+  public BaseDexClassLoader(String dexPath, File optimizedDirectory,
+          String librarySearchPath, ClassLoader parent) {
+    //构造DexPathList,生成Element、DexFile
+    this.pathList = new DexPathList(this, dexPath, librarySearchPath, null, isTrusted);
+  }
   @Override
     protected Class<?> findClass(String name) throws ClassNotFoundException {
         Class clazz = pathList.findClass(name);
-
-        if (clazz == null) {
-            throw new ClassNotFoundException(name);
-        }
-
         return clazz;
     }
 }
 ------------DexPathList.java
 public class DexPathList{
-public Class findClass(String name) {
-        for (Element element : dexElements) {
-            DexFile dex = element.dexFile;
 
-            if (dex != null) {
-                Class clazz = dex.loadClassBinaryName(name, definingContext);
-                if (clazz != null) {
-                    return clazz;
-                }
-            }
+    DexPathList(ClassLoader definingContext, String dexPath,
+            String librarySearchPath, File optimizedDirectory, boolean isTrusted) {
+
+      //创建Element，每个Element包含一个DexFile
+      this.dexElements = makeDexElements(splitDexPath(dexPath), optimizedDirectory,
+                                                 suppressedExceptions, definingContext, isTrusted);
+    }
+
+    public Class findClass(String name) {
+          for (Element element : dexElements) {
+              Class<?> clazz = element.findClass(name, definingContext, suppressed);
+              if (clazz != null) {
+                  return clazz;
+              }
+          }
+          return null;
+        }
+     }
+
+     static class Element {
+        private final File path;
+        private final dalvik.source.DexFile dexFile;
+
+        public Class<?> findClass(String name, ClassLoader definingContext,
+                List<Throwable> suppressed) {
+            return dexFile != null ? dexFile.loadClassBinaryName(name, definingContext, suppressed)
+                    : null;
         }
 
-        return null;
+        public Class<?> findClass(String name, ClassLoader definingContext,List<Throwable> suppressed) {
+            return dexFile != null ? dexFile.loadClassBinaryName(name, definingContext, suppressed)
+                    : null;
+        }
+
+        public URL findResource(String name) {
+            if (path != null && path.isDirectory()) {
+                File resourceFile = new File(path, name);
+                if (resourceFile.exists()) {
+                    try {
+                        return resourceFile.toURI().toURL();
+                    } catch (MalformedURLException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+            }
+
+            return null;
+        }
+     }
+
+
+    public final class DexFile {
+
+        private DexFile(String sourceName, String outputName, int flags, ClassLoader loader,
+                DexPathList.Element[] elements) throws IOException {
+
+            //openDexFile()用于检查dex文件是不是正确，以及进行dex->odex的优化工作。
+            //在new DexFile时，会调用DexFile#openDexFile（），这个方法会进行dex->odex的优化工作，dex->odex是显著耗时的。
+
+            mCookie = openDexFile(sourceName, outputName, flags, loader, elements);
+        }
+
+        public Class loadClassBinaryName(String name, ClassLoader loader, List<Throwable> suppressed) {
+            return defineClass(name, loader, mCookie, this, suppressed);
+        }
+
+        private static Class defineClass(String name, ClassLoader loader, Object cookie,
+                                         DexFile dexFile, List<Throwable> suppressed) {
+            Class result = defineClassNative(name, loader, cookie, dexFile);
+
+            return result;
+        }
     }
- }
 }
-上述函数的大致逻辑为：遍历一个装在dex文件（每个dex文件实际上是一个DexFile对象）的数组（Element数组，Element是一个内部类），
+
+上述函数的大致逻辑为：遍历包含dex文件（每个dex文件实际上是一个DexFile对象）的数组（Element数组，Element是一个内部类），
 然后依次去加载所需要的class文件，直到找到为止。
+在new DexFile时，会调用DexFile#openDexFile（），这个方法会进行dex->odex的优化工作，dex->odex是显著耗时的。
 
-------------DexFile.java
-public class DexFile{
 
-    public Class loadClassBinaryName(String name, ClassLoader loader) {
-        return defineClass(name, loader, mCookie);
-    }
-
-    private native static Class defineClass(String name, ClassLoader loader, int cookie);
-
-}
-
-类的查找是通过遍历dexElements来进行查找的。所以为了实现替换效果，我们需要将DexClassLoader中的Element对象放到dexElements数组的第0个位置，
+类的查找是通过遍历dexElements来进行查找的。所以为了实现替换效果，我们需要将外部DexClassLoader中的Element对象放到dexElements数组的第0个位置，
 这样才能在BaseDexClassLoader查找类时先找到DexClassLoader所用的user.dex中的类。
 
 3、Class文件的替换
@@ -115,9 +172,28 @@ public class DexFile{
 
 也就是说，将第二个dex放在dexElements数组中的第1位，这样就可以加载到外部的类。
 
-ClassLoader
-BaseDexClassLoader
-PathClassLoader ：Android应用就是用它来加载  PathClassLoader classLoader=(PathClassLoader)getClassLoader();
-DexClassLoader ：可以加载apk,jar,及dex文件，但PathClassLoader只能加载已安装到系统中（即/data/app目录下）的apk文件。
+
+参考：
+https://www.jianshu.com/p/54378566aa86
+
+1、PathClassLoader以及应用
+PathClassLoader用来加载系统的和apk中的类，dexpath路径在构造方法中传入，且只能是系统apk路径。
+mutidex、qq空间的热修复方案，tink，都是hook的PathClassLoader。只是qq空间的热修复方案把补丁放到dexPathList中数组的最前面。tink是将补丁和原来的dex合并以后替换原来的dex）
+
+2、DexClassLoader以及应用
+DexClassLoader用来加载外部的类（.jar或.apk），外部类的dexpath路径在构造方法中传入，比如从网络下载的dex等，或插件化的apk。
+从网络下载到dex后。new 一个DexClassLoader，dex放到DexClassLoader之后，使用DexClassLoader.loadClass（需要加载的patch类全名）得到补丁类的Class对象，然后class.newInstance()对应的实例。
+new的时候就把网络下载到的dex路径告诉DexClassLoader，DexClassLoader会将dex一步步封装，放到DexClassLoader中的pathList里面。
+dex放到DexClassLoader之后，使用DexClassLoader.loadClass（需要加载的patch类全名）得到补丁类的Class对象，
+然后class.newInstance()对应的实例。通过这个实例里的信息来找到要修补的是哪个类，然后找到这个类对应的Class对象，
+如果没有就使用PathClassLoader加载。然后将刚才new好的那个补丁实例赋值给这个Class对象中的一个类变量。
+这样，在app某一处调用该类的某个方法的时候，会先判断那个类变量是不是为null，不为null且确实是需要修复这个方法，
+那么就使用补丁实例中的逻辑，不再走原来方法的逻辑。其中每个class中添加一个类对象，每个方法添加一段拦截逻辑是在编译期操作字节码加载的。
+整体的robust的工作原理就是这样。可以看到robust没有hook操作PathClassLoader。只是正常使用了DexClassLoader。
+为什么robust不用hookPathClassLoader，因为它其实并不是替换类，而是新增加类（逻辑），只是表现形式上看是替换了老方法。
+所以以前的类并不需要被替换或者置后。）。为什么robust不用PathClassLoader加载dex，因为我们不能给PathClassLoader传入dex的路径，它必须接收系统的路径。
+
+美团robus
+https://tech.meituan.com/android_robust.html
 
 
