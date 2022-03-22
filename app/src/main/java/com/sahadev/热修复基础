@@ -57,7 +57,7 @@ loadClass()方法大概做了以下工作：
 ClassLoader
 --BaseDexClassLoader
    ---PathClassLoader ：Android应用就是用它来加载  PathClassLoader classLoader=(PathClassLoader)getClassLoader();
-      ---DexClassLoader ：可以加载apk,jar,及dex文件，但PathClassLoader只能加载已安装到系统中（即/data/app目录下）的apk文件。
+   ---DexClassLoader ：可以加载apk,jar,及dex文件，但PathClassLoader只能加载已安装到系统中（即/data/app目录下）的apk文件。
 
 
 
@@ -167,7 +167,7 @@ public class DexPathList{
 3、Class文件的替换
 类的加载顺序
 类的加载是从上而下加载的，所以就算是DexClassLoader加载了外部的类，但是在系统使用类的时候还是会先在ClassLoader中查找，
-如果找不到则会在BaseDexClassLoader中查找，如果再找不到，就会进入PathClassLoader中查找，最后才会使用DexClassLoader进行查找，
+如果找不到则会在BaseDexClassLoader中查找，如果再找不到,才会使用DexClassLoader进行查找，
 所以按照这个流程外部类是无法正常发挥作用的。所以我们的目的就是在查找工程内的类之前，先让加载器去外部的dex中查找。
 
 也就是说，将第二个dex放在dexElements数组中的第1位，这样就可以加载到外部的类。
@@ -181,7 +181,7 @@ PathClassLoader用来加载系统的和apk中的类，dexpath路径在构造方�
 mutidex、qq空间的热修复方案，tink，都是hook的PathClassLoader。只是qq空间的热修复方案把补丁放到dexPathList中数组的最前面。tink是将补丁和原来的dex合并以后替换原来的dex）
 
 2、DexClassLoader以及应用
-DexClassLoader用来加载外部的类（.jar或.apk），外部类的dexpath路径在构造方法中传入，比如从网络下载的dex等，或插件化的apk。
+DexClassLoader用来加载外部的类（.jar或.apk或.dx），外部类的dexpath路径在构造方法中传入，比如从网络下载的dex等，或插件化的apk。
 从网络下载到dex后。new 一个DexClassLoader，dex放到DexClassLoader之后，使用DexClassLoader.loadClass（需要加载的patch类全名）得到补丁类的Class对象，然后class.newInstance()对应的实例。
 new的时候就把网络下载到的dex路径告诉DexClassLoader，DexClassLoader会将dex一步步封装，放到DexClassLoader中的pathList里面。
 dex放到DexClassLoader之后，使用DexClassLoader.loadClass（需要加载的patch类全名）得到补丁类的Class对象，
