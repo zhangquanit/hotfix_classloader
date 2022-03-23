@@ -80,7 +80,7 @@ public class BaseDexClassLoader extends ClassLoader{
 }
 ------------DexPathList.java
 public class DexPathList{
-
+    private Element[] dexElements;
     DexPathList(ClassLoader definingContext, String dexPath,
             String librarySearchPath, File optimizedDirectory, boolean isTrusted) {
 
@@ -114,21 +114,6 @@ public class DexPathList{
             return dexFile != null ? dexFile.loadClassBinaryName(name, definingContext, suppressed)
                     : null;
         }
-
-        public URL findResource(String name) {
-            if (path != null && path.isDirectory()) {
-                File resourceFile = new File(path, name);
-                if (resourceFile.exists()) {
-                    try {
-                        return resourceFile.toURI().toURL();
-                    } catch (MalformedURLException ex) {
-                        throw new RuntimeException(ex);
-                    }
-                }
-            }
-
-            return null;
-        }
      }
 
 
@@ -137,9 +122,7 @@ public class DexPathList{
         private DexFile(String sourceName, String outputName, int flags, ClassLoader loader,
                 DexPathList.Element[] elements) throws IOException {
 
-            //openDexFile()用于检查dex文件是不是正确，以及进行dex->odex的优化工作。
-            //在new DexFile时，会调用DexFile#openDexFile（），这个方法会进行dex->odex的优化工作，dex->odex是显著耗时的。
-
+            //openDexFile()用于检查dex文件是不是正确，以及进行dex->odex的优化工作，dex->odex是显著耗时的。
             mCookie = openDexFile(sourceName, outputName, flags, loader, elements);
         }
 
@@ -150,7 +133,6 @@ public class DexPathList{
         private static Class defineClass(String name, ClassLoader loader, Object cookie,
                                          DexFile dexFile, List<Throwable> suppressed) {
             Class result = defineClassNative(name, loader, cookie, dexFile);
-
             return result;
         }
     }
